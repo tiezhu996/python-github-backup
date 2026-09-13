@@ -43,6 +43,14 @@ from .graphql_queries import (
     ISSUE_CROSS_REFERENCE_COUNT_QUERY,
     PULL_CROSS_REFERENCE_COUNT_QUERY,
 )
+from .identity import (
+    KIND_REPOSITORY,
+    KIND_STARRED,
+    BackupLocationResolver,
+    fetch_repository_record,
+    legacy_entry_owner_name,
+    update_repository_marker,
+)
 
 FILE_URI_PREFIX = "file://"
 logger = logging.getLogger(__name__)
@@ -399,6 +407,25 @@ def parse_args(args=None):
         action="store_true",
         dest="skip_existing",
         help="skip project if a backup directory exists",
+    )
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        dest="migrate",
+        help=(
+            "preview migration of backup directories for renamed/transferred "
+            "repositories (consolidates split history by stable repository id; "
+            "no changes are made unless --migrate-apply is also given)"
+        ),
+    )
+    parser.add_argument(
+        "--migrate-apply",
+        action="store_true",
+        dest="migrate_apply",
+        help=(
+            "with --migrate, execute the previewed migration instead of only "
+            "printing it"
+        ),
     )
     parser.add_argument(
         "-L",
@@ -2125,6 +2152,35 @@ def gist_backup_is_current(repository, repo_cwd, repo_dir):
     return stored.get("updated_at") == updated_at
 
 
+def make_identity_verifier(args):
+    """Verify a markerless backup directory against the live repository.
+
+    Used to decide whether an existing, name-based directory may be adopted
+    for a listing item. Only consulted when there is no clone remote to use
+    as evidence, and only for authenticated runs (so unauthenticated backups
+    and offline test runs are not slowed down by extra requests). Returns
+    True/False when the API answers, None when it cannot.
+    """
+
+    def verify(kind, entry, repository):
+        if not get_auth(args):
+            return None
+        guessed = legacy_entry_owner_name(entry, args.user)
+        if guessed is None:
+            return None
+        record = fetch_repository_record(
+            lambda template: retrieve_data(args, template, paginated=False),
+            get_github_api_host(args),
+            guessed[0],
+            guessed[1],
+        )
+        if record is None or record.get("id") is None:
+            return None
+        return record.get("id") == repository["id"]
+
+    return verify
+
+
 def backup_repositories(args, output_directory, repositories):
     logger.info("Backing up repositories")
     repos_template = "https://{0}/repos".format(get_github_api_host(args))
@@ -2133,23 +2189,27 @@ def backup_repositories(args, output_directory, repositories):
     )
     incremental_resource_work_attempted = False
     skipped_unchanged_gists = 0
+    # Index existing backups by their stable GitHub id so renamed/transferred
+    # repositories keep using their original directory.
+    location_resolver = BackupLocationResolver(
+        output_directory, verifier=make_identity_verifier(args)
+    )
 
     for repository in repositories:
         if repository.get("is_gist"):
+            # Gist directories are already keyed by the stable gist id.
             repo_cwd = os.path.join(output_directory, "gists", repository["id"])
-        elif repository.get("is_starred"):
-            # put starred repos in -o/starred/${owner}/${repo} to prevent collision of
-            # any repositories with the same name
-            repo_cwd = os.path.join(
-                output_directory,
-                "starred",
-                repository["owner"]["login"],
-                repository["name"],
-            )
         else:
-            repo_cwd = os.path.join(
-                output_directory, "repositories", repository["name"]
-            )
+            repo_cwd, _location_reason = location_resolver.resolve(repository)
+            mkdir_p(repo_cwd)
+            if repository.get("id") is not None:
+                kind = KIND_STARRED if repository.get("is_starred") else KIND_REPOSITORY
+                try:
+                    update_repository_marker(repo_cwd, repository, kind)
+                except OSError as e:
+                    logger.debug(
+                        "Could not write identity marker for %s: %s", repo_cwd, e
+                    )
 
         repo_dir = os.path.join(repo_cwd, "repository")
         repo_url = get_github_repo_url(args, repository)

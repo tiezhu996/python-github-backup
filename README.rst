@@ -396,6 +396,21 @@ Still safer than the previous version.
 
 Incremental backup only changes how issue and pull request data is fetched.
 
+Renames, transfers and backup identity
+--------------------------------------
+
+When a repository is renamed or transferred to another owner, GitHub keeps its numeric repository ``id`` unchanged. github-backup stores that identity in a ``.github-backup.json`` marker file inside each repository/starred backup directory, so the renamed or transferred repository keeps backing up into its **existing** directory: issues, pull requests, checkpoints, attachments, release assets and clones stay in one place. Two different repositories that merely share a name are never merged; a name collision with a different id is written to a separate ``{name}.{id}`` directory instead. Gists already use the stable gist id as their directory name and require no special handling.
+
+Directories created by older releases have no marker. Preview the identity-based reorganization with::
+
+    github-backup USER --migrate
+
+and execute it with::
+
+    github-backup USER --migrate --migrate-apply
+
+Migration verifies each unmarked directory against the GitHub API (following rename/transfer redirects), consolidates directories that hold the same repository, renames homes to their current paths, and leaves checkpoints valid (when two copies are merged, the older incremental boundary is kept so the overlap is re-fetched). Conflicting data files are quarantined under ``.migration-duplicates/`` instead of being deleted. Claims are written before any data is moved, so an interrupted or failed migration can never leave two directories that both look like the current backup; re-running ``--migrate-apply`` resumes the work.
+
 Known blocking errors
 ---------------------
 

@@ -72,11 +72,27 @@ def main():
         if isinstance(log_level, int):
             logger.root.setLevel(log_level)
 
+    if args.migrate_apply and not args.migrate:
+        logger.error("--migrate-apply can only be used together with --migrate")
+        sys.exit(1)
+
     if not args.as_app:
         logger.info("Backing up user {0} to {1}".format(args.user, output_directory))
         authenticated_user = get_authenticated_user(args)
     else:
         authenticated_user = {"login": None}
+
+    if args.migrate:
+        from github_backup.identity import run_migration
+
+        sys.exit(
+            run_migration(
+                args,
+                output_directory,
+                authenticated_user,
+                apply_changes=args.migrate_apply,
+            )
+        )
 
     repositories = retrieve_repositories(args, authenticated_user)
     repositories = filter_repositories(args, repositories)
