@@ -17,6 +17,7 @@ from github_backup.github_backup import (
     parse_args,
     retrieve_repositories,
 )
+from github_backup.retention import backup_lock, run_retention_cli
 
 # INFO and DEBUG go to stdout, WARNING and above go to stderr
 log_format = logging.Formatter(
@@ -64,6 +65,18 @@ def main():
         logger.info("Create output directory {0}".format(output_directory))
         mkdir_p(output_directory)
 
+    # Offline retention tidy-up: preview (--tidy) or execute an approved
+    # plan (--tidy-apply). Never touches the network or the normal backup flow.
+    if args.tidy or args.tidy_apply:
+        if args.quiet:
+            logger.setLevel(logging.WARNING)
+        if args.log_level:
+            log_level = logging.getLevelName(args.log_level.upper())
+            if isinstance(log_level, int):
+                logger.root.setLevel(log_level)
+        run_retention_cli(args)
+        return
+
     if args.lfs_clone:
         check_git_lfs_install()
 
@@ -72,16 +85,21 @@ def main():
         if isinstance(log_level, int):
             logger.root.setLevel(log_level)
 
-    if not args.as_app:
-        logger.info("Backing up user {0} to {1}".format(args.user, output_directory))
-        authenticated_user = get_authenticated_user(args)
-    else:
-        authenticated_user = {"login": None}
+    # Hold the output-directory lock for the whole backup so a retention
+    # tidy-up can never interleave with files being written here.
+    with backup_lock(output_directory, "backup"):
+        if not args.as_app:
+            logger.info(
+                "Backing up user {0} to {1}".format(args.user, output_directory)
+            )
+            authenticated_user = get_authenticated_user(args)
+        else:
+            authenticated_user = {"login": None}
 
-    repositories = retrieve_repositories(args, authenticated_user)
-    repositories = filter_repositories(args, repositories)
-    backup_repositories(args, output_directory, repositories)
-    backup_account(args, output_directory, authenticated_user)
+        repositories = retrieve_repositories(args, authenticated_user)
+        repositories = filter_repositories(args, repositories)
+        backup_repositories(args, output_directory, repositories)
+        backup_account(args, output_directory, authenticated_user)
 
 
 if __name__ == "__main__":

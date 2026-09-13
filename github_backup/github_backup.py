@@ -163,7 +163,13 @@ def non_negative_int(value):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Backup a github account")
-    parser.add_argument("user", metavar="USER", type=str, help="github username")
+    parser.add_argument(
+        "user",
+        metavar="USER",
+        type=str,
+        nargs="?",
+        help="github username (not required for --tidy/--tidy-apply)",
+    )
     parser.add_argument(
         "-t",
         "--token",
@@ -522,7 +528,44 @@ def parse_args(args=None):
         default=5,
         help="maximum number of retries for API calls (default: 5)",
     )
-    return parser.parse_args(args)
+
+    # Retention tidy-up (offline; operates on -o/--output-directory)
+    parser.add_argument(
+        "--tidy",
+        action="store_true",
+        dest="tidy",
+        help="preview a retention tidy-up of the output directory: list what "
+        "would be removed and why, with sizes, then exit without deleting "
+        "anything",
+    )
+    parser.add_argument(
+        "--tidy-apply",
+        metavar="PLAN",
+        dest="tidy_apply",
+        default=None,
+        help="execute a plan previously produced by --tidy; the directory is "
+        "re-scanned and the plan is only applied if it still matches",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        dest="assume_yes",
+        help="with --tidy-apply, confirm the plan without prompting",
+    )
+
+    parsed = parser.parse_args(args)
+
+    if bool(parsed.tidy) + bool(parsed.tidy_apply) > 1:
+        parser.error("--tidy and --tidy-apply are mutually exclusive")
+    if (parsed.tidy or parsed.tidy_apply) and not parsed.output_directory:
+        parser.error("-o/--output-directory is required with --tidy/--tidy-apply")
+    if not parsed.tidy and not parsed.tidy_apply and not parsed.user:
+        parser.error(
+            "USER is required (or use --tidy/--tidy-apply to maintain an "
+            "existing backup directory)"
+        )
+
+    return parsed
 
 
 def get_auth(args, encode=True, for_git_cli=False):
